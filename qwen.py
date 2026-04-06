@@ -1,44 +1,80 @@
-from transformers import AutoTokenizer, AutoModelForCausalLM
-#from awq import AutoAWQForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, GenerationConfig, BitsAndBytesConfig
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import SimpleJsonOutputParser, JsonOutputParser
+from langchain_huggingface import HuggingFacePipeline
+from pydantic import BaseModel, Field
 import time
 import os
-
+import accelerate
+import torch
 
 class Qwen:
-    def __init__(self):
+
+
+    class _JsonParser(BaseModel):
+        action: int = Field(description="어떤 동작을 할지, 0: 행동 안함, 1,-1: ")
+
+    def __init__(self, model_name = "Qwen3-0.6B"):
+        self.model_name = model_name
         self._message = ""
-        target_folder = "../models/models--Qwen--Qwen3-0.6B"
-        folder_path = "../models/models--Qwen--Qwen3-0.6B/snapshots/"
+        target_folder = "../models/models--Qwen--" + self.model_name
+        model_path = target_folder+"/snapshots/"
+
         # check if the model exists 
+
         if os.path.exists(target_folder) and os.path.isdir(target_folder):
             with open("file_path.data", 'r') as f:
-                folder_name = f.read().strip()
-            self.model = AutoModelForCausalLM.from_pretrained(folder_path+folder_name, local_files_only = True)
-            self.tokenizer = AutoTokenizer.from_pretrained(folder_path+folder_name, local_files_only = True)
+                model_folder = f.read().strip()
+                #model_folder = "c1899de289a04d12100db370d81485cdf75e47ca"
+            self.model = AutoModelForCausalLM.from_pretrained(model_path+model_folder, local_files_only = True)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_path+model_folder, local_files_only = True)
         else:
-            self.tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B", cache_dir = "../models")
-            self.model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B", cache_dir = "../models")
+            self.tokenizer = AutoTokenizer.from_pretrained("Qwen/" + self.model_name, cache_dir = "../models")
+            self.model = AutoModelForCausalLM.from_pretrained("Qwen/" + self.model_name, cache_dir = "../models")
             
         with open("file_path.data", 'w') as f:
-                f.write(os.listdir("../models/models--Qwen--Qwen3-0.6B/snapshots/")[0])
+                f.write(os.listdir(model_path)[0])
 
-    def __call__(self, message = "불을 끄기 위한 거를 json으로 대답해"):
-        self._message = message
-        messages = [
-            {"role": "tool", "content": self._message},
-        ]
+        self._pipe = pipeline(
+            "text-generation",
+            model=self.model,
+            tokenizer=self.tokenizer,
+            max_new_tokens=128,           # 길이를 줄여서 헛소리 방지
+            return_full_text=False,
+            repetition_penalty=1.5,      # 반복 방지
+            do_sample=False,
+        )
+        pipline_kwargs = {
+            "return_full_text" : False,
+            #"stop": ["}"]
+        }
 
-        inputs = self.tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=True,
-            use_cache = True,
-            return_tensors="pt",
-        ).to(self.model.device)
+        self._llm = HuggingFacePipeline(pipeline=self._pipe, pipeline_kwargs=pipline_kwargs)
 
-        outputs = self.model.generate(**inputs, max_new_tokens=960)
-        print(self.tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:]))
+        parser = SimpleJsonOutputParser(pydantic_object=self._JsonParser)
+
+        template = """Without any explanation answer with ONLY JSON
+        turn on the light -> {{"action": 1}}
+        turn off the light -> {{"action": -1}}
+        else -> {{"action": 0}}
+
+        Input will be Korean, you need to understand the meaning and only answer in JSON
+        User: {message}
+        Result : {{"action": (-1 or 0 or 1)}}
+        """
+
+        prompt = PromptTemplate(
+            template=template,
+            input_variables=["message"],
+            partial_variables={"format_instructions": parser.get_format_instructions()},
+        )
+        self._chain = prompt | self._llm | parser
+
+    def __call__(self, message = "불 켜 봐"):
+        result = self._chain.invoke({"message":message})
+        print(result)
+
+
 
 def main():
     qwen = Qwen()
