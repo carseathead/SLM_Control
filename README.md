@@ -15,7 +15,7 @@
 - `transformers` 라이브러리
 
 ```powershell
-pip install transformers
+pip install -r requirements.txt
 ```
 
 ## 사용 방법
