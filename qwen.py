@@ -1,19 +1,8 @@
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, GenerationConfig, BitsAndBytesConfig
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import SimpleJsonOutputParser, JsonOutputParser
-from langchain_huggingface import HuggingFacePipeline
-from pydantic import BaseModel, Field
-import time
+from transformers import AutoTokenizer, AutoModelForCausalLM
 import os
-import accelerate
 import torch
 
 class Qwen:
-
-
-    class _JsonParser(BaseModel):
-        action: int = Field(description="어떤 동작을 할지, 0: 행동 안함, 1,-1: ")
-
     def __init__(self, model_name = "Qwen3-0.6B"):
         self.model_name = model_name
         self._message = ""
@@ -35,44 +24,88 @@ class Qwen:
         with open("file_path.data", 'w') as f:
                 f.write(os.listdir(model_path)[0])
 
-        self._pipe = pipeline(
-            "text-generation",
-            model=self.model,
-            tokenizer=self.tokenizer,
-            max_new_tokens=128,           # 길이를 줄여서 헛소리 방지
-            return_full_text=False,
-            repetition_penalty=1.5,      # 반복 방지
-            do_sample=False,
-        )
-        pipline_kwargs = {
-            "return_full_text" : False,
-            #"stop": ["}"]
+        self.model.eval()
+        self._template = """Classify the Korean command into exactly one label.
+Allowed labels: LIGHT_ON, LIGHT_OFF, OTHER
+
+Meaning:
+- LIGHT_ON: turn on the light
+- LIGHT_OFF: turn off the light
+- OTHER: not a light on/off command
+
+Examples:
+Korean: 불 켜 줘
+Label: LIGHT_ON
+Korean: 불 켜
+Label: LIGHT_ON
+Korean: 불 좀 켜줄래
+Label: LIGHT_ON
+Korean: 전등 켜 줘
+Label: LIGHT_ON
+Korean: 불 꺼 줘
+Label: LIGHT_OFF
+Korean: 불 꺼
+Label: LIGHT_OFF
+Korean: 전등 꺼 줘
+Label: LIGHT_OFF
+Korean: 안녕
+Label: OTHER
+Korean: 날씨 알려줘
+Label: OTHER
+
+Korean: {message}
+Label:
+        """
+        self._label_actions = {
+            "LIGHT_ON": 1,
+            "LIGHT_OFF": -1,
+            "OTHER": 0,
+        }
+        base_prompt = self._template.format(message="N/A")
+        self._base_scores = {
+            label: self._score_label(base_prompt, label)
+            for label in self._label_actions
         }
 
-        self._llm = HuggingFacePipeline(pipeline=self._pipe, pipeline_kwargs=pipline_kwargs)
+    def _score_label(self, prompt, label):
+        prompt_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
+        label_ids = self.tokenizer(" " + label, return_tensors="pt", add_special_tokens=False).input_ids
+        input_ids = torch.cat([prompt_ids, label_ids], dim=1).to(self.model.device)
 
-        parser = SimpleJsonOutputParser(pydantic_object=self._JsonParser)
+        with torch.no_grad():
+            logits = self.model(input_ids).logits
 
-        template = """Without any explanation answer with ONLY JSON
-        turn on the light -> {{"action": 1}}
-        turn off the light -> {{"action": -1}}
-        else -> {{"action": 0}}
+        log_probs = torch.log_softmax(logits[:, :-1, :], dim=-1)
+        target_ids = input_ids[:, 1:]
+        label_start = prompt_ids.shape[1] - 1
+        label_log_probs = log_probs[:, label_start:, :].gather(
+            2,
+            target_ids[:, label_start:].unsqueeze(-1),
+        ).squeeze(-1)
 
-        Input will be Korean, you need to understand the meaning and only answer in JSON
-        User: {message}
-        Result : {{"action": (-1 or 0 or 1)}}
-        """
+        return label_log_probs.mean().item()
 
-        prompt = PromptTemplate(
-            template=template,
-            input_variables=["message"],
-            partial_variables={"format_instructions": parser.get_format_instructions()},
-        )
-        self._chain = prompt | self._llm | parser
+    def _classify(self, message):
+        prompt = self._template.format(message=message)
+        raw_scores = {
+            label: self._score_label(prompt, label)
+            for label in self._label_actions
+        }
+        scores = {
+            label: raw_scores[label] - self._base_scores[label]
+            for label in self._label_actions
+        }
+
+        label = max(scores, key=scores.get)
+        if label != "OTHER" and scores[label] - scores["OTHER"] < 0.5:
+            label = "OTHER"
+        return label, scores
 
     def __call__(self, message = "불 켜 봐"):
-        result = self._chain.invoke({"message":message})
+        label, scores = self._classify(message)
+        result = {"action": self._label_actions[label]}
         print(result)
+        return result
 
 
 
