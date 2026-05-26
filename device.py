@@ -1,6 +1,3 @@
-import qwen
-import psutil
-import os
 import socket
 import sys
 
@@ -18,7 +15,6 @@ except ConnectionRefusedError:
     print("❌ 접속 실패! stt_engine.py 파일을 터미널에서 먼저 실행해 주세요.")
     sys.exit(1)
 
-qwenllm = qwen.Qwen()
 try:
     buffer = ""
     while True:
@@ -30,18 +26,28 @@ try:
             
         # 데이터를 문자열로 디코딩 후 줄바꿈 단위로 처리
         buffer += data.decode('utf-8')
-        if buffer == "[BLANK_AUDIO]":
-            print("⚠️  인식된 음성 명령이 없습니다. (무음 구간)")
-        else:
-            qwen_response = qwenllm(buffer.strip())
-            print(f"📥 [수신된 음성 명령]: {buffer.strip()}")
-            print(f"🤖 [Qwen 응답]: {qwen_response}")
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            command = line.strip()
+            
+            if command:
+                print(f"📥 [수신된 음성 명령]: \"{command}\"")
+                
+                # ===================================================
+                # 여기서부터 수신된 텍스트로 원하는 알고리즘/구동 코드를 구현합니다.
+                # ===================================================
+                if "불" in command and "켜" in command:
+                    print("▶️ [동작 실행] 💡 스마트 전등(GPIO)을 점등합니다.")
+                elif "불" in command and "끄" in command:
+                    print("▶️ [동작 실행] 🌑 스마트 전등(GPIO)을 소등합니다.")
+                elif "정지" in command or "스톱" in command:
+                    print("▶️ [동작 실행] 🛑 모터 구동을 즉시 정지합니다.")
+                elif "종료" in command:
+                    print("▶️ [동작 실행] 프로그램을 안전하게 완전 종료합니다.")
+                    raise KeyboardInterrupt
+                # ===================================================
 
 except KeyboardInterrupt:
     print("\n👋 제어 프로그램을 정지합니다.")
 finally:
     client_socket.close() 
-qwenllm = qwen.Qwen()
-print(qwenllm("불 켜 줘"))
-process = psutil.Process(os.getpid())
-print(f"메모리 사용량: {process.memory_info().rss / (1024 * 1024):.2f} MB")
