@@ -150,9 +150,9 @@ try:
         transcripts = []
         for result in response.results:
             if result.alternatives:
-                text = result.alternatives[0].transcript.strip()
-                if text:
-                    transcripts.append(text)
+                transcript = result.alternatives[0].transcript.strip()
+                if transcript:
+                    transcripts.append(transcript)
 
         text = " ".join(transcripts).strip()
         has_text = len(text) > 1
